@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Letter</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#fff;--ink:#000;--err:#c00;--ok:#080;color-scheme:light}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111;--ink:#ddd;--err:#f66;--ok:#6c6;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#111;--ink:#ddd;--err:#f66;--ok:#6c6;color-scheme:dark}
+*,*::before,*::after{box-sizing:border-box}
+html{height:100%}
+body{margin:8px;min-height:100%;background:var(--bg);color:var(--ink)}
+textarea,input{width:100%}
+label{display:block;margin-top:8px}
+[hidden]{display:none!important}
+article{border-top:1px solid;margin-top:8px;padding-top:4px}
+article p{white-space:pre-wrap;word-break:break-word}
+.err{color:var(--err)}.ok{color:var(--ok)}
+</style></head>
+<body>
+<b id="h"></b>
+<label for="n">From</label><input id="n" maxlength="40" autocomplete="off">
+<label for="t">Letter</label><textarea id="t" rows="12"></textarea>
+<button id="go">Send</button>
+<div id="m" role="status"></div>
+<div id="fb" hidden><textarea id="o" rows="4" readonly></textarea><button id="cp">Copy</button></div>
+<script>
+const $=s=>document.querySelector(s),E=new TextEncoder();
+const b64=u=>{let s='';u.forEach(b=>s+=String.fromCharCode(b));return btoa(s)};
+const unb64u=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');s=s.padEnd(Math.ceil(s.length/4)*4,'=');return Uint8Array.from(atob(s),c=>c.charCodeAt(0))};
+async function enc(pubB64u,obj){
+  const pk=await crypto.subtle.importKey('spki',unb64u(pubB64u),{name:'RSA-OAEP',hash:'SHA-256'},false,['encrypt']);
+  const ak=await crypto.subtle.generateKey({name:'AES-GCM',length:256},true,['encrypt']);
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},ak,E.encode(JSON.stringify(obj))));
+  const wk=new Uint8Array(await crypto.subtle.encrypt({name:'RSA-OAEP'},pk,await crypto.subtle.exportKey('raw',ak)));
+  const o=new Uint8Array(wk.length+12+ct.length);o.set(wk);o.set(iv,wk.length);o.set(ct,wk.length+12);return b64(o)}
+//--core-end
+const P=new URLSearchParams(location.hash.slice(1)),K=P.get('k'),F=P.get('f'),TO=P.get('to');
+function say(t,e){const m=$('#m');m.textContent=t;m.className=e?'err':'ok'}
+if(TO)$('#h').textContent='To. '+TO;
+if(!K){say('Invalid link',1);$('#go').disabled=true}
+$('#go').onclick=async()=>{
+  const t=$('#t').value.trim();if(!t)return say('Empty',1);
+  $('#go').disabled=true;say('');
+  try{
+    const c=await enc(K,{n:$('#n').value.trim(),t,d:new Date().toLocaleDateString('sv-SE')});
+    if(F){try{const r=await fetch('https://formspree.io/f/'+encodeURIComponent(F),{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({letter:c,_subject:'New letter'})});
+      if(r.ok){$('#t').value='';$('#fb').hidden=true;say('Sent');$('#go').disabled=false;return}}catch(_){}}
+    $('#o').value=c;$('#fb').hidden=false;
+    say(F?'Auto-send failed. Copy this and send it manually.':'Copy this and send it manually.',!!F);
+  }catch(_){say('Error',1)}
+  $('#go').disabled=false};
+$('#cp').onclick=async()=>{const o=$('#o');try{await navigator.clipboard.writeText(o.value)}catch(_){o.select();document.execCommand('copy')}$('#cp').textContent='Copied';setTimeout(()=>$('#cp').textContent='Copy',1200)};
+</script></body></html>

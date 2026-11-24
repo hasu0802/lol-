@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Mailbox</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#fff;--ink:#000;--err:#c00;--ok:#080;color-scheme:light}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111;--ink:#ddd;--err:#f66;--ok:#6c6;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#111;--ink:#ddd;--err:#f66;--ok:#6c6;color-scheme:dark}
+*,*::before,*::after{box-sizing:border-box}
+html{height:100%}
+body{margin:8px;min-height:100%;background:var(--bg);color:var(--ink)}
+textarea,input{width:100%}
+label{display:block;margin-top:8px}
+[hidden]{display:none!important}
+article{border-top:1px solid;margin-top:8px;padding-top:4px}
+article p{white-space:pre-wrap;word-break:break-word}
+.err{color:var(--err)}.ok{color:var(--ok)}
+</style></head>
+<body>
+<label for="pw">Password (6+)</label><input id="pw" type="password" autocomplete="new-password">
+<label for="nm">Name (optional)</label><input id="nm" autocomplete="off">
+<label for="fid">Formspree ID (optional)</label><input id="fid" autocomplete="off">
+<button id="mk">Create</button>
+<div id="m1" role="status"></div>
+<div id="o1" hidden>
+<label for="lnk">Link</label><textarea id="lnk" rows="4" readonly></textarea>
+<label for="sk">Secret key</label><textarea id="sk" rows="6" readonly></textarea>
+</div>
+<hr>
+<div id="lock" hidden></div>
+<div id="rd">
+<label for="sk2">Secret key</label><textarea id="sk2" rows="4"></textarea>
+<label for="pw2">Password</label><input id="pw2" type="password" autocomplete="current-password">
+<label for="ls">Letters (one per line)</label><textarea id="ls" rows="6"></textarea>
+<button id="op">Open</button>
+<div id="m2" role="status"></div>
+<div id="res"></div>
+</div>
+<script>
+const OPEN=new Date('2027-01-01T00:00:00+09:00');
+const $=s=>document.querySelector(s),E=new TextEncoder(),DEC=new TextDecoder();
+const b64=u=>{let s='';u.forEach(b=>s+=String.fromCharCode(b));return btoa(s)};
+const unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+const b64u=s=>s.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+async function dk(pw,salt){const b=await crypto.subtle.importKey('raw',E.encode(pw),'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:150000,hash:'SHA-256'},b,{name:'AES-GCM',length:256},false,['encrypt','decrypt'])}
+async function mkKeys(pw){
+  const kp=await crypto.subtle.generateKey({name:'RSA-OAEP',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['encrypt','decrypt']);
+  const pub=b64u(b64(new Uint8Array(await crypto.subtle.exportKey('spki',kp.publicKey))));
+  const pk=new Uint8Array(await crypto.subtle.exportKey('pkcs8',kp.privateKey));
+  const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12));
+  const ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},await dk(pw,salt),pk));
+  const o=new Uint8Array(28+ct.length);o.set(salt);o.set(iv,16);o.set(ct,28);return{pub,blob:b64(o)}}
+async function openKey(blob,pw){
+  const b=unb64(blob.replace(/\s+/g,''));
+  const raw=await crypto.subtle.decrypt({name:'AES-GCM',iv:b.slice(16,28)},await dk(pw,b.slice(0,16)),b.slice(28));
+  return crypto.subtle.importKey('pkcs8',raw,{name:'RSA-OAEP',hash:'SHA-256'},false,['decrypt'])}
+async function readLetter(priv,l){
+  const b=unb64(l),iv=b.slice(256,268);
+  const ak=await crypto.subtle.importKey('raw',await crypto.subtle.decrypt({name:'RSA-OAEP'},priv,b.slice(0,256)),'AES-GCM',false,['decrypt']);
+  return JSON.parse(DEC.decode(await crypto.subtle.decrypt({name:'AES-GCM',iv},ak,b.slice(268))))}
+//--core-end
+function say(id,t,e){const m=$(id);m.textContent=t;m.className=e?'err':'ok'}
+const left=Math.ceil((OPEN-Date.now())/864e5);
+if(left>0&&location.hash!=='#test'){$('#rd').hidden=true;$('#lock').hidden=false;$('#lock').textContent='Locked until Jan 1 · D-'+left}
+$('#mk').onclick=async()=>{
+  const pw=$('#pw').value;if(pw.length<6)return say('#m1','Password too short',1);
+  $('#mk').disabled=true;say('#m1','...');
+  try{const {pub,blob}=await mkKeys(pw);
+    let h='k='+pub;const to=$('#nm').value.trim(),f=$('#fid').value.trim();
+    if(f)h+='&f='+encodeURIComponent(f);if(to)h+='&to='+encodeURIComponent(to);
+    $('#lnk').value=new URL('index.html',location.href).href.split('#')[0]+'#'+h;$('#sk').value=blob;$('#o1').hidden=false;
+    say('#m1','Done. Save both.')}
+  catch(_){say('#m1','Error',1)}
+  $('#mk').disabled=false};
+$('#op').onclick=async()=>{
+  const box=$('#res');box.textContent='';
+  let priv;try{priv=await openKey($('#sk2').value,$('#pw2').value)}catch(_){return say('#m2','Wrong key or password',1)}
+  const lines=$('#ls').value.split('\n').map(x=>x.trim()).filter(Boolean);let bad=0;
+  for(const l of lines){try{const o=await readLetter(priv,l);
+    const a=document.createElement('article'),h=document.createElement('h3'),p=document.createElement('p');
+    h.textContent='From. '+(o.n||'anonymous')+' · '+o.d;p.textContent=o.t;a.append(h,p);box.append(a)}catch(_){bad++}}
+  const n=box.children.length;say('#m2',n+' opened.'+(bad?' Failed: '+bad:''),bad&&!n)};
+</script></body></html>
